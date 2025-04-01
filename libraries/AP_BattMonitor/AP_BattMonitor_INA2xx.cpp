@@ -1,4 +1,6 @@
 #include "AP_BattMonitor_config.h"
+#include <GCS_MAVLink/GCS.h>
+
 
 #if AP_BATTERY_INA2XX_ENABLED
 
@@ -16,7 +18,7 @@ extern const AP_HAL::HAL& hal;
 // INA226 specific registers
 #define REG_226_CONFIG        0x00
 #define  REG_226_CONFIG_DEFAULT 0x4127
-#define  REG_226_CONFIG_RESET   0x8000
+#define  REG_226_CONFIG_RESET 0x8000
 #define REG_226_BUS_VOLTAGE   0x02
 #define REG_226_CURRENT       0x04
 #define REG_226_CALIBRATION   0x05
@@ -24,7 +26,7 @@ extern const AP_HAL::HAL& hal;
 
 // INA228 specific registers
 #define REG_228_CONFIG        0x00
-#define  REG_228_CONFIG_RESET   0x8000
+#define  REG_228_CONFIG_RESET 0x8000
 #define REG_228_ADC_CONFIG    0x01
 #define REG_228_SHUNT_CAL     0x02
 #define REG_228_VBUS          0x05
@@ -36,7 +38,7 @@ extern const AP_HAL::HAL& hal;
 
 // INA237/INA238 specific registers
 #define REG_238_CONFIG        0x00
-#define  REG_238_CONFIG_RESET   0x8000
+#define  REG_238_CONFIG_RESET 0x8000
 #define REG_238_ADC_CONFIG    0x01
 #define REG_238_SHUNT_CAL     0x02
 #define REG_238_VBUS          0x05
@@ -56,6 +58,17 @@ extern const AP_HAL::HAL& hal;
 #define REG_231_MASK          0x06
 #define REG_231_ALERT         0x07
 
+// INA260 specific registers
+#define REG_260_CONFIG        0x00
+#define REG_260_CONFIG_RESET  0x8000
+#define REG_260_CURRENT       0x01
+#define REG_260_BUS_VOLTAGE   0x02
+#define REG_260_POWER_VOLTAGE 0x03
+#define REG_260_MASK_ENABLE   0x06
+#define REG_260_ALERT_LIMIT   0x07
+#define REG_260_MANUFACT_ID   0xFE
+#define REG_260_DEVICE_ID     0xFF
+
 
 #ifndef DEFAULT_BATTMON_INA2XX_MAX_AMPS
 #define DEFAULT_BATTMON_INA2XX_MAX_AMPS 90.0
@@ -73,7 +86,7 @@ extern const AP_HAL::HAL& hal;
 #endif
 
 // list of addresses to probe if I2C_ADDR is zero
-const uint8_t AP_BattMonitor_INA2XX::i2c_probe_addresses[] { 0x41, 0x44, 0x45 };
+const uint8_t AP_BattMonitor_INA2XX::i2c_probe_addresses[] { 0x40, 0x41, 0x44, 0x45 };
 
 const AP_Param::GroupInfo AP_BattMonitor_INA2XX::var_info[] = {
 
@@ -190,6 +203,22 @@ bool AP_BattMonitor_INA2XX::configure(DevType dtype)
         if (write_word(REG_231_CALIBRATION, cal)) {
             return true;
         }
+        break;
+    }
+
+    case DevType::INA260: {
+        voltage_LSB = 1.25e-3;  // 1.25mV/bit
+        current_LSB = 1.25e-3; // 1.25mA/bit
+        
+        const uint16_t conf = (0x4 << 6) | (0x4 << 3) | (0x7 << 0);  // 1.1ms for both current and voltage, continuous mode
+
+        if (write_word(REG_260_CONFIG, REG_260_CONFIG_RESET) && // reset
+            write_word(REG_260_CONFIG, conf)) {
+            dev_type = dtype;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Found INA260 on bus %u addr 0x%02x", dev->bus_num(), dev->get_bus_address());
+            return true;
+        }
+        break;
     }
         
     }
@@ -308,6 +337,10 @@ bool AP_BattMonitor_INA2XX::detect_device(void)
         // no manufacturer ID for 231
         return configure(DevType::INA231);
     }
+    if (read_word16(REG_260_MANUFACT_ID, id) && id == 0x5449 &&
+        read_word16(REG_260_DEVICE_ID, id) && (id & 0xFFF0) == 0x2270) {
+        return configure(DevType::INA260);
+    }
 
     return false;
 }
@@ -393,6 +426,25 @@ void AP_BattMonitor_INA2XX::timer(void)
         }
         voltage = bus_voltage16 * voltage_LSB;
         current = current16 * current_LSB;
+        break;
+    }
+
+    case DevType::INA260: {
+        int16_t bus_voltage16, current16;
+        if (!read_word16(REG_260_BUS_VOLTAGE, bus_voltage16) ||
+            !read_word16(REG_260_CURRENT, current16)) {
+            failed_reads++;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Failed INA260 read");
+            if (failed_reads > 10) {
+                // device has disconnected, we need to reconfigure it
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "More than 10 failed INA260 reads --> setting device to Unknown");
+                dev_type = DevType::UNKNOWN;
+            }
+            return;
+        }
+        voltage = bus_voltage16 * voltage_LSB;
+        current = current16 * current_LSB;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "INA260 reading voltage: %.2f V", voltage);
         break;
     }
     }

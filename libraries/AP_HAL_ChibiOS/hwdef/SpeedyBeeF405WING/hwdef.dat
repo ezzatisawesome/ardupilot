@@ -78,6 +78,11 @@ define HAL_BATT_CURR_PIN 11
 define HAL_BATT_VOLT_SCALE 11.05 # matched to PDB board
 define HAL_BATT_CURR_SCALE 50    # matched to PDB board
 
+# solar panel sensing
+define AP_BATTERY_INA2XX_ENABLED 1
+define HAL_BATTMON_INA2XX_ADDR 0
+define HAL_BATTMON_INA2XX_BUS 1
+
 # analog rssi pin
 define BOARD_RSSI_ANA_PIN 14
 
